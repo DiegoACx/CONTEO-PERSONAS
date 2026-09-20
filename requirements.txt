@@ -1,11 +1,11 @@
 # Dependencias directas, con las versiones del pip freeze del proyecto.
 # torch y torchvision los instala ultralytics.
 # Resuelven con ruedas binarias en Windows x64 para Python 3.10 a 3.13 (probado en 3.11).
-streamlit==1.38.0
+streamlit==1.54.0
 ultralytics==8.3.34
 opencv-python==4.10.0.84
 numpy==2.1.1
-pillow==10.4.0
+pillow==12.3.0
 # Lo necesita el seguimiento ByteTrack de ultralytics; si falta, ultralytics
 # intenta instalarlo solo con `pip` en el primer uso.
 lapx==0.10.0
