@@ -1,4 +1,4 @@
-# Dependencias directas, con las versiones del pip freeze del proyecto.
+# Dependencias directas. Los pines se actualizaron y auditaron con pip-audit (streamlit 1.54.0 y pillow 12.3.0).
 # torch y torchvision los instala ultralytics.
 # Resuelven con ruedas binarias en Windows x64 para Python 3.10 a 3.13 (probado en 3.11).
 streamlit==1.54.0
