@@ -1,96 +1,163 @@
+"""Conteo de personas con YOLOv8 y seguimiento ByteTrack (Streamlit).
+
+Uso:
+    streamlit run app/streamlit_app.py
+
+Fuente de video: una camara (indice configurable) o un archivo de video local. No se guardan
+fotogramas ni videos. La logica de conteo esta en src/counter.py.
+"""
+import sys
+from pathlib import Path
+
+import cv2
 import streamlit as st
 from ultralytics import YOLO
-import cv2
-from PIL import Image
-import numpy as np
 
-st.set_page_config(page_title="Conteo de Personas", layout="centered")
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+from counter import TrackingCounter  # noqa: E402
 
-model_path = r"C:\Users\santi\OneDrive\Escritorio\CONTEO-PERSONAS-main\CONTEO-PERSONAS-main\yolov8s.pt"
-model = YOLO(model_path)
-
-# Variable para almacenar el contador total de personas
-total_person_count = 0
-# Variable para mantener los centroides de las personas detectadas
-previous_centroids = []
-
-def get_centroid(x1, y1, x2, y2):
-    # Calcula el centro de la caja delimitadora
-    return (int((x1 + x2) / 2), int((y1 + y2) / 2))
-
-def distance(p1, p2):
-    # Calcula la distancia entre dos puntos (p1 y p2 son centroides)
-    return np.sqrt((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2)
-
-def process_frame(frame):
-    global total_person_count, previous_centroids
-    results = model(frame)  # Se obtiene el resultado del modelo para la imagen actual
-    detections = results[0].boxes  # Accedemos a las cajas de las detecciones
-
-    current_centroids = []
-
-    # Iteramos sobre cada detección
-    for det in detections:
-        # Det tiene la forma (x1, y1, x2, y2, conf, class)
-        x1, y1, x2, y2 = map(int, det.xyxy[0])  # Coordenadas del cuadro delimitador
-        conf = det.conf[0]  # Confianza de la detección
-        cls = int(det.cls[0])  # Clase de la detección (0 para personas)
-        
-        # Si la clase es 0 (persona), procesamos la detección
-        if cls == 0:
-            centroid = get_centroid(x1, y1, x2, y2)
-            current_centroids.append(centroid)
-
-            # Verificamos si el centroide es nuevo o si ya se había detectado previamente
-            is_new_person = True
-            for prev_centroid in previous_centroids:
-                if distance(centroid, prev_centroid) < 50:  # Umbral de proximidad de 50 píxeles
-                    is_new_person = False
-                    break
-
-            if is_new_person:
-                total_person_count += 1  # Incrementamos el contador solo si es una persona nueva
-
-    # Actualizamos los centroides previos
-    previous_centroids = current_centroids
-
-    # Dibujar rectángulos alrededor de las personas detectadas
-    for det in detections:
-        x1, y1, x2, y2 = map(int, det.xyxy[0])  # Coordenadas de la caja delimitadora
-        # Dibujar el rectángulo alrededor de la persona detectada
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)  # Rectángulo verde
-
-    return frame
-
-camera = cv2.VideoCapture(0)
-
-st.title("Conteo de Personas")
-st.text("Esta aplicación utiliza YOLOv8 para detectar y contar personas de manera precisa.")
-
-if st.button("Iniciar conteo"):
-    stframe = st.empty()
-    count_display = st.empty()
-    while True:
-        ret, frame = camera.read()
-        if not ret:
-            st.error("No se pudo acceder a la cámara.")
-            break
-
-        frame = process_frame(frame)
-
-        # Mostrar el conteo total de personas
-        count_display.subheader(f"Conteo de Personas: {total_person_count}")
-
-        # Redimensionamos la imagen
-        frame = cv2.resize(frame, (640, 480)) 
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        frame_pil = Image.fromarray(frame_rgb)
-
-        stframe.image(frame_pil, channels="RGB", use_column_width=False)
-
-camera.release()
-st.write("Conteo de Personas Finalizado")
+MODEL_NAME = "yolov8s.pt"  # Ultralytics lo descarga solo si no existe
+AVISO = ("No se guardan fotogramas ni videos. El conteo por ID puede contar dos veces "
+         "a una persona si el seguimiento la pierde.")
 
 
-# cd "C:\Users\santi\OneDrive\Escritorio\CONTEO-PERSONAS-main\CONTEO-PERSONAS-main"
-# streamlit run "Conteo de Personas Streamlit.py"
+@st.cache_resource
+def cargar_modelo() -> YOLO:
+    return YOLO(MODEL_NAME)
+
+
+def reiniciar_seguimiento(modelo: YOLO) -> None:
+    """Con persist=True el seguimiento conserva su estado entre llamadas; y el modelo esta cacheado.
+    Se reinicia al iniciar para que cada conteo empiece de cero."""
+    predictor = getattr(modelo, "predictor", None)
+    for tracker in getattr(predictor, "trackers", None) or []:
+        tracker.reset()
+
+
+def abrir_captura(fuente: str, indice: int, ruta: str):
+    """Devuelve (captura, None) o (None, mensaje de error)."""
+    if fuente == "Cámara":
+        captura = cv2.VideoCapture(int(indice))
+        if not captura.isOpened():
+            captura.release()
+            return None, (f"No se pudo abrir la cámara con índice {int(indice)}. Comprueba que esté conectada, "
+                          "que ninguna otra aplicación la esté usando y que el sistema permita el acceso, "
+                          "o prueba otro índice.")
+        return captura, None
+    ruta = ruta.strip().strip('"')
+    if not ruta:
+        return None, "Escribe la ruta de un archivo de video."
+    if not Path(ruta).is_file():
+        return None, f"No existe el archivo: {ruta}"
+    captura = cv2.VideoCapture(ruta)
+    if not captura.isOpened():
+        captura.release()
+        return None, "OpenCV no pudo abrir ese archivo como video (formato o códec no soportado)."
+    return captura, None
+
+
+def extraer_personas(resultado):
+    """Cajas (x1, y1, x2, y2) e IDs (None si no hay ID) de las personas del fotograma."""
+    cajas = resultado.boxes
+    n = len(cajas)
+    if n == 0:
+        return [], []
+    xyxy = cajas.xyxy.cpu().numpy().astype(int).tolist()
+    ids = cajas.id.int().cpu().tolist() if cajas.id is not None else [None] * n
+    return xyxy, ids
+
+
+def dibujar(frame, xyxy, ids) -> None:
+    for (x1, y1, x2, y2), track_id in zip(xyxy, ids):
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        if track_id is not None:
+            cv2.putText(frame, f"ID {track_id}", (x1, max(y1 - 6, 12)), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                        (0, 255, 0), 2)
+
+
+def main() -> None:
+    st.set_page_config(page_title="Conteo de personas", layout="centered")
+    st.title("Conteo de personas")
+    st.warning(AVISO)
+
+    if "contador" not in st.session_state:
+        st.session_state.contador = TrackingCounter()
+        st.session_state.presentes = 0
+        st.session_state.unicos = 0
+
+    fuente = st.radio("Fuente de video", ["Cámara", "Archivo de video"], horizontal=True, key="fuente")
+    indice, ruta = 0, ""
+    if fuente == "Cámara":
+        indice = st.number_input("Índice de la cámara", min_value=0, max_value=10, value=0, step=1,
+                                 key="indice_camara")
+    else:
+        ruta = st.text_input("Ruta del archivo de video (local)", key="ruta_video")
+
+    col_iniciar, col_detener = st.columns(2)
+    iniciar = col_iniciar.button("Iniciar", key="iniciar", type="primary", use_container_width=True)
+    detener = col_detener.button("Detener", key="detener", use_container_width=True)
+
+    col_presentes, col_unicos = st.columns(2)
+    ph_presentes, ph_unicos = col_presentes.empty(), col_unicos.empty()
+    ph_video = st.empty()
+
+    def mostrar_contadores() -> None:
+        ph_presentes.metric("Personas en el fotograma", st.session_state.presentes)
+        ph_unicos.metric("IDs de seguimiento únicos", st.session_state.unicos)
+
+    mostrar_contadores()
+
+    # Pulsar "Detener" provoca una nueva ejecucion del script, que interrumpe el bucle de captura
+    # (su bloque finally libera la captura). Los contadores quedan en st.session_state.
+    if detener:
+        st.info("Conteo detenido.")
+
+    if not iniciar:
+        return
+
+    captura, error = abrir_captura(fuente, indice, ruta)
+    if error:
+        st.error(error)
+        return
+
+    try:
+        with st.spinner("Cargando el modelo..."):
+            modelo = cargar_modelo()
+    except Exception as exc:  # p. ej., sin internet la primera vez que se descarga el modelo
+        captura.release()
+        st.error(f"No se pudo cargar el modelo {MODEL_NAME}: {exc}")
+        return
+
+    contador: TrackingCounter = st.session_state.contador
+    contador.reset()
+    st.session_state.presentes = 0
+    st.session_state.unicos = 0
+    reiniciar_seguimiento(modelo)
+
+    leyo_todo = False
+    try:
+        while captura.isOpened():
+            ok, frame = captura.read()
+            if not ok:
+                leyo_todo = True
+                break
+            resultado = modelo.track(frame, persist=True, classes=[0], tracker="bytetrack.yaml", verbose=False)[0]
+            xyxy, ids = extraer_personas(resultado)
+            conteo = contador.update(ids)
+            st.session_state.presentes = conteo.present
+            st.session_state.unicos = conteo.unique
+            dibujar(frame, xyxy, ids)
+            ph_video.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), channels="RGB", use_column_width=True)
+            mostrar_contadores()
+    finally:
+        captura.release()
+
+    if leyo_todo:
+        if fuente == "Archivo de video":
+            st.info("Fin del video.")
+        else:
+            st.error("Se perdió la señal de la cámara: no se pudo leer un fotograma.")
+
+
+main()
