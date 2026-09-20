@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Entornos virtuales
+.venv/
+venv/
+
+# Modelos (Ultralytics descarga yolov8s.pt por nombre) y salidas de Ultralytics
+*.pt
+runs/
+
+# Videos
+*.mp4
+*.avi
